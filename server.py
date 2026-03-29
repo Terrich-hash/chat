@@ -1,76 +1,94 @@
 import asyncio
 
-clients = {}  # Dictionary to track clients and usernames
+clients = {}  # {writer: username}
 
-# Broadcast a message to all clients
-async def broadcast(message, sender_client):
-    for client in clients:
-        if client != sender_client:  # Do not send to the sender
+# Broadcast message to all clients except sender
+async def broadcast(message, sender_writer=None):
+    for client in list(clients):
+        if client != sender_writer:
             try:
-                await client.send(message)
-            except:
+                client.write(message)
+                await client.drain()
+            except Exception as e:
+                print(f"Broadcast error: {e}")
                 await remove_client(client)
 
-# Handle individual client connections
+# Handle each client
 async def handle_client(reader, writer):
     addr = writer.get_extra_info('peername')
     print(f"New connection from {addr}")
 
-    # Send and receive username
-    writer.write("Enter your username: ".encode('utf-8'))
-    await writer.drain()
-    data = await reader.read(100)
-    username = data.decode('utf-8').strip()
-
-    if username in clients.values():
-        writer.write("Username already taken! Disconnecting...".encode('utf-8'))
+    try:
+        # Ask for username
+        writer.write("Enter your username: ".encode())
         await writer.drain()
-        writer.close()
-        return
 
-    clients[writer] = username
-    print(f"Username {username} added for {addr}")
+        data = await reader.readline()
+        username = data.decode().strip()
 
-    # Notify everyone
-    await broadcast(f"{username} has joined the chat!".encode('utf-8'), writer)
+        if not username:
+            writer.close()
+            await writer.wait_closed()
+            return
 
-    while True:
-        try:
-            # Continuously listen for messages
-            data = await reader.read(100)
-            message = data.decode('utf-8').strip()
+        # Check duplicate username
+        if username in clients.values():
+            writer.write("Username already taken! Disconnecting...\n".encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            return
 
-            if not message:
-                break  # Client disconnected
+        clients[writer] = username
+        print(f"Username {username} added for {addr}")
 
-            print(f"Received message from {username}: {message}")
-            await broadcast(f"{username}: {message}".encode('utf-8'), writer)
-        except:
-            break
+        # Notify others
+        await broadcast(f"{username} has joined the chat!\n".encode(), writer)
 
-    # Client disconnects
-    await remove_client(writer)
-    print(f"{username} disconnected")
-    writer.close()
+        # Listen for messages
+        while True:
+            data = await reader.readline()
+            if not data:
+                break
 
+            message = data.decode().strip()
+            if message:
+                print(f"{username}: {message}")
+                await broadcast(f"{username}: {message}\n".encode(), writer)
+
+    except Exception as e:
+        print(f"Error with {addr}: {e}")
+
+    finally:
+        await remove_client(writer)
+        print(f"{addr} disconnected")
+
+# Remove client safely
 async def remove_client(writer):
-    username = clients[writer]
-    del clients[writer]
-    await broadcast(f"{username} has left the chat.".encode('utf-8'), writer)
+    if writer in clients:
+        username = clients[writer]
+        del clients[writer]
 
-# Main function to start the server
+        await broadcast(f"{username} has left the chat.\n".encode(), writer)
+
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except:
+            pass
+
+# Start server
 async def main():
-    server_ip = "127.0.0.1"
-    server_port = "12345"
-    server = await asyncio.start_server(handle_client, server_ip, server_port)
+    server = await asyncio.start_server(handle_client, '127.0.0.1', 12345)
     addr = server.sockets[0].getsockname()
-    print(f'Server started on {addr}')
+    print(f"Server started on {addr}")
 
     async with server:
         await server.serve_forever()
 
-# Run the server
-try:
-    asyncio.run(main())
-except KeyboardInterrupt:
-    print("Server shut down.")
+# Run
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Server shut down.")
