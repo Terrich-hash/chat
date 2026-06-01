@@ -1,0 +1,9 @@
+
+
+services:
+  chat-server:
+    build: .
+    container_name: async-chat-server
+    ports:
+      - "12345:12345" 
+    restart: unless-stopped
